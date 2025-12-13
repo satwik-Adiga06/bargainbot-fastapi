@@ -9,7 +9,6 @@ from openai import OpenAI
 # ------------------ SETUP ------------------
 
 load_dotenv()
-
 app = FastAPI()
 
 api_key = os.getenv("OPENAI_API_KEY")
@@ -21,7 +20,7 @@ client = OpenAI(api_key=api_key)
 # ------------------ NEGOTIATION STATE (DEMO LEVEL) ------------------
 
 START_PRICE = 150
-ABSOLUTE_MIN = 100
+ABSOLUTE_MIN = 110
 
 current_price = START_PRICE
 deal_closed = False
@@ -31,6 +30,8 @@ has_greeted = False
 # ------------------ HELPERS ------------------
 
 def extract_offer(text: str):
+    # normalize shorthand
+    text = text.replace("k", "000").replace("thousand", "000")
     match = re.search(r"\d+", text)
     return int(match.group()) if match else None
 
@@ -66,7 +67,7 @@ def negotiate(user_input: UserInput):
     if deal_closed:
         return {"response": "Deal done sir 🤝 Next customer please."}
 
-    # --------- NO PRICE MENTIONED → AI RESPONSE ---------
+    # --------- NO PRICE MENTIONED → AI (STRICT) ---------
     if offer is None:
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
@@ -76,8 +77,9 @@ def negotiate(user_input: UserInput):
                     "content": (
                         "You are an Indian shopkeeper in Bengaluru. "
                         "Do NOT greet again. "
-                        "Do NOT change the product or price. "
-                        "You are selling ONE Bluetooth speaker. "
+                        "Do NOT mention price, currency, or numbers. "
+                        "Do NOT invent any price. "
+                        "Answer only about product features, quality, or general talk. "
                         "Speak casually in Kannada-English mix."
                     ),
                 },
@@ -86,13 +88,19 @@ def negotiate(user_input: UserInput):
         )
         return {"response": response.choices[0].message.content}
 
-    # --------- TOO LOW (HARD REJECT) ---------
-    if offer < 110:
+    # --------- UNREALISTIC OFFER (CONFUSION GUARD) ---------
+    if offer > START_PRICE * 2:
         return {
-            "response": "Sir idu too low. Naanu loss alli sell maadakke agalla."
+            "response": "Sir, price swalpa confusion ide. Correct offer helu."
         }
 
-    # --------- FIRST SERIOUS OFFER (FIGHT STARTS) ---------
+    # --------- TOO LOW (HARD REJECT) ---------
+    if offer < ABSOLUTE_MIN:
+        return {
+            "response": "Illa sir, idu too low. Loss alli sell maadakke agalla."
+        }
+
+    # --------- FIRST SERIOUS OFFER (STRONG FIGHT) ---------
     if counter_attempts == 0:
         counter_attempts += 1
         current_price = max(offer + 15, 135)
@@ -107,16 +115,12 @@ def negotiate(user_input: UserInput):
         if offer >= 120:
             deal_closed = True
             return {
-                "response": f"Okay sir… {offer} final. Regular customer antha 🤝"
+                "response": f"Hmm… sari sir. {offer} final. Deal 🤝"
             }
 
-        if 110 <= offer < 120:
-            return {
-                "response": (
-                    "Sir swalpa adjust maadi. 125 kodbeku. "
-                    "Naanu already loss alli idini."
-                )
-            }
+        return {
+            "response": "Sir swalpa adjust maadi. 120 last price."
+        }
 
     # --------- FINAL ROUND (CLOSE OR WALK AWAY) ---------
     if counter_attempts >= 2:
@@ -126,14 +130,8 @@ def negotiate(user_input: UserInput):
                 "response": f"Okay sir, {offer}. Final deal 🤝"
             }
 
-        if offer >= 115:
-            deal_closed = True
-            return {
-                "response": "Hmm… sari sir. 115 final. Last price 🤝"
-            }
-
         return {
-            "response": "Illa sir. Ee price ge agalla."
+            "response": "Illa sir. 120 below agalla. Final decision idu."
         }
 
 # ------------------ SIMPLE UI ------------------
