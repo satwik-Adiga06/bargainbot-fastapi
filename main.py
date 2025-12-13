@@ -1,199 +1,148 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from textblob import TextBlob
-import logging
 import os
+import re
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# Load environment variables
+# ------------------ SETUP ------------------
+
 load_dotenv()
 
-# Initialize OpenAI client
-client = OpenAI()
-
-# Initialize FastAPI app
 app = FastAPI()
 
-# Logging setup
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    raise RuntimeError("OPENAI_API_KEY not found")
 
-# Initial negotiation prompt
-INITIAL_PROMPT = (
-    
-    "You are a small shopkeeper in Bengaluru selling a Bluetooth speaker. "
-    "You talk like a real Indian shopkeeper, not like an AI or teacher. "
-    "You mostly speak simple English mixed with Kannada words written in English letters "
-    "(for example: swalpa, illa, sir, madam, adjust maadi, last rate). "
-    "Your tone is friendly, practical, and slightly firm, like a local shopkeeper. "
+client = OpenAI(api_key=api_key)
 
-    "The selling price of the Bluetooth speaker is 150 dollars. "
-    "Your minimum acceptable price is 100 dollars. "
-    "You must never agree to anything below 100 dollars. "
+# ------------------ NEGOTIATION STATE (DEMO LEVEL) ------------------
 
-    "If the customer is polite, you can be more friendly and flexible. "
-    "If the customer is rude or aggressive, you respond firmly but never abusive. "
-    "Do not use bad slangs or swear words. "
+START_PRICE = 150
+ABSOLUTE_MIN = 100
 
-    "Keep replies short, conversational, and natural, suitable for voice output. "
-    "Do not explain rules or prices unless necessary. "
+current_price = START_PRICE
+has_countered = False
+deal_closed = False
 
-    "Example responses:\n"
-    "- 'Sir, price swalpa adjust maadi, but 100 below agalla'\n"
-    "- 'Illa sir, idu already best rate'\n"
-    "- '130 I can do, last price sir'\n"
-    "- 'Quality speaker sir, worth the price'\n"
+# ------------------ HELPERS ------------------
 
-    "Always behave like a real Bengaluru shopkeeper negotiating with a customer."
-)
+def extract_offer(text: str):
+    match = re.search(r"\d+", text)
+    return int(match.group()) if match else None
 
-
-# Opening message shown when chat loads
-OPENING_MESSAGE = (
-    "Hello! I’m selling a high-quality Bluetooth speaker for $150. "
-    "The minimum acceptable price is $100. Let’s negotiate!"
-)
-
-# -------------------- Helper Functions --------------------
-
-def analyze_sentiment(user_input: str) -> float:
-    try:
-        analysis = TextBlob(user_input)
-        return analysis.sentiment.polarity
-    except Exception as e:
-        logger.error(f"Sentiment analysis failed: {e}")
-        return 0.0
-
-
-def handle_basic_enquiry(user_input: str):
-    text = user_input.lower()
-
-    if "warranty" in text:
-        return "The Bluetooth speaker comes with a 1-year warranty."
-
-    if "features" in text or "tell me about" in text:
-        return (
-            "This Bluetooth speaker offers high-quality sound, Bluetooth 5.0, "
-            "12-hour battery life, and water resistance."
-        )
-
-    return None
-
-
-def determine_response_based_on_sentiment(sentiment_score, user_input):
-    text = user_input.lower()
-
-    if sentiment_score > 0.2:
-        if "120" in text:
-            return "I appreciate your offer of $120. I can accept it. We have a deal!"
-        return "Thanks for your positive tone! I can offer it to you for $130."
-
-    elif sentiment_score < -0.2:
-        return "I understand your concern, but $150 is the listed price. Let me know if you'd like to proceed."
-
-    else:
-        if "70" in text:
-            return "That offer is too low. The minimum acceptable price is $100."
-        if "120" in text:
-            return "I can meet you at $130. It’s a fair deal."
-        if "100" in text:
-            return "Your offer of $100 is acceptable. Let’s finalize the deal!"
-
-    return None
-
-
-# -------------------- Data Model --------------------
+# ------------------ MODELS ------------------
 
 class UserInput(BaseModel):
     message: str
 
-
-# -------------------- Routes --------------------
+# ------------------ ROUTES ------------------
 
 @app.get("/")
 def root():
-    return {"message": "Bluetooth Speaker Negotiation Bot is running."}
-
+    return {
+        "message": "I am selling a Bluetooth speaker for 150. Let's negotiate."
+    }
 
 @app.post("/negotiate")
-async def negotiate(user_input: UserInput):
-    try:
-        basic_reply = handle_basic_enquiry(user_input.message)
-        if basic_reply:
-            return {"response": basic_reply}
+def negotiate(user_input: UserInput):
+    global current_price, has_countered, deal_closed
 
-        sentiment = analyze_sentiment(user_input.message)
+    text = user_input.message.lower()
+    offer = extract_offer(text)
 
-        response_text = determine_response_based_on_sentiment(
-            sentiment, user_input.message
+    # Deal already closed
+    if deal_closed:
+        return {"response": "Deal done sir 🤝 Next customer please."}
+
+    # No price mentioned → fallback to AI
+    if offer is None:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an Indian shopkeeper in Bengaluru selling a Bluetooth speaker. "
+                        "Speak casually with Kannada-English mix. "
+                        "Be polite but firm."
+                    ),
+                },
+                {"role": "user", "content": user_input.message},
+            ],
         )
+        return {"response": response.choices[0].message.content}
 
-        if not response_text:
-            prompt = f"{INITIAL_PROMPT}\nUser says: {user_input.message}\nYour response:"
+    # Lowball immediately
+    if offer < ABSOLUTE_MIN:
+        return {"response": "Illa sir, idu too less. Serious offer maadi."}
 
-            ai_response = client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}]
-            )
+    # First serious offer → fight
+    if not has_countered:
+        counter = max(offer + 10, 130)
+        current_price = counter
+        has_countered = True
+        return {
+            "response": f"{counter} last price sir. Quality item idu."
+        }
 
-            response_text = ai_response.choices[0].message.content.strip()
+    # After counter → close deal if close enough
+    if offer >= current_price - 10:
+        deal_closed = True
+        return {
+            "response": f"Okay sir, {offer} final. Deal done 🤝"
+        }
 
-        return {"response": response_text}
+    # User drops after counter
+    return {
+        "response": "Sir, already best rate idu. Please understand."
+    }
 
-    except Exception as e:
-        logger.error(f"Negotiation failed: {e}")
-        raise HTTPException(status_code=500, detail="Negotiation failed")
-
-
-# -------------------- Frontend --------------------
+# ------------------ SIMPLE UI ------------------
 
 @app.get("/dom", response_class=HTMLResponse)
-def get_dom():
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>BargainBot</title>
-        <style>
-            body {{ font-family: sans-serif; max-width: 600px; margin: 2rem auto; }}
-            #chat {{ border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 1rem; }}
-            .user {{ text-align: right; color: blue; margin: 0.5rem; }}
-            .bot {{ text-align: left; color: green; margin: 0.5rem; }}
-        </style>
-    </head>
-    <body>
-        <h2>BargainBot</h2>
+def dom():
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>BargainBot</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: auto; }
+        #chat { border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 10px; }
+        .user { text-align: right; color: blue; }
+        .bot { text-align: left; color: green; }
+    </style>
+</head>
+<body>
+    <h2>BargainBot – Shopkeeper Negotiation</h2>
+    <div id="chat"></div>
+    <input id="msg" placeholder="Type your offer..." />
+    <button onclick="send()">Send</button>
 
-        <div id="chat">
-            <div class="bot">Bot: {OPENING_MESSAGE}</div>
-        </div>
+    <script>
+        async function send() {
+            const msg = document.getElementById("msg").value;
+            if (!msg) return;
 
-        <input id="msg" placeholder="Enter your offer..." />
-        <button onclick="send()">Send</button>
+            document.getElementById("chat").innerHTML +=
+                `<div class="user">You: ${msg}</div>`;
 
-        <script>
-            async function send() {{
-                const input = document.getElementById("msg");
-                const chat = document.getElementById("chat");
-                const message = input.value;
-                if (!message) return;
+            document.getElementById("msg").value = "";
 
-                chat.innerHTML += `<div class="user">You: ${{message}}</div>`;
-                input.value = "";
+            const res = await fetch("/negotiate", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({message: msg})
+            });
 
-                const res = await fetch("/negotiate", {{
-                    method: "POST",
-                    headers: {{ "Content-Type": "application/json" }},
-                    body: JSON.stringify({{ message: message }})
-                }});
-
-                const data = await res.json();
-                chat.innerHTML += `<div class="bot">Bot: ${{data.response}}</div>`;
-                chat.scrollTop = chat.scrollHeight;
-            }}
-        </script>
-    </body>
-    </html>
-    """
+            const data = await res.json();
+            document.getElementById("chat").innerHTML +=
+                `<div class="bot">Bot: ${data.response}</div>`;
+        }
+    </script>
+</body>
+</html>
+"""
