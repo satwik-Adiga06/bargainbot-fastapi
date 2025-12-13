@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Initial negotiation prompt
 INITIAL_PROMPT = (
-    INITIAL_PROMPT = (
+    
     "You are a small shopkeeper in Bengaluru selling a Bluetooth speaker. "
     "You talk like a real Indian shopkeeper, not like an AI or teacher. "
     "You mostly speak simple English mixed with Kannada words written in English letters "
@@ -49,7 +49,6 @@ INITIAL_PROMPT = (
     "Always behave like a real Bengaluru shopkeeper negotiating with a customer."
 )
 
-)
 
 # Opening message shown when chat loads
 OPENING_MESSAGE = (
