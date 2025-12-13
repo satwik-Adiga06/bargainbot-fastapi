@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import os
@@ -24,8 +24,9 @@ START_PRICE = 150
 ABSOLUTE_MIN = 100
 
 current_price = START_PRICE
-has_countered = False
 deal_closed = False
+counter_attempts = 0
+has_greeted = False
 
 # ------------------ HELPERS ------------------
 
@@ -42,22 +43,30 @@ class UserInput(BaseModel):
 
 @app.get("/")
 def root():
-    return {
-        "message": "I am selling a Bluetooth speaker for 150. Let's negotiate."
-    }
+    return {"message": "BargainBot running"}
 
 @app.post("/negotiate")
 def negotiate(user_input: UserInput):
-    global current_price, has_countered, deal_closed
+    global current_price, deal_closed, counter_attempts, has_greeted
 
     text = user_input.message.lower()
     offer = extract_offer(text)
 
-    # Deal already closed
+    # --------- GREETING (ONLY ONCE) ---------
+    if not has_greeted:
+        has_greeted = True
+        return {
+            "response": (
+                "Namaskara sir 🙂 Bluetooth speaker ide. "
+                "Starting price 150. Bargain maadbahudu."
+            )
+        }
+
+    # --------- DEAL ALREADY CLOSED ---------
     if deal_closed:
         return {"response": "Deal done sir 🤝 Next customer please."}
 
-    # No price mentioned → fallback to AI
+    # --------- NO PRICE MENTIONED → AI RESPONSE ---------
     if offer is None:
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
@@ -65,9 +74,11 @@ def negotiate(user_input: UserInput):
                 {
                     "role": "system",
                     "content": (
-                        "You are an Indian shopkeeper in Bengaluru selling a Bluetooth speaker. "
-                        "Speak casually with Kannada-English mix. "
-                        "Be polite but firm."
+                        "You are an Indian shopkeeper in Bengaluru. "
+                        "Do NOT greet again. "
+                        "Do NOT change the product or price. "
+                        "You are selling ONE Bluetooth speaker. "
+                        "Speak casually in Kannada-English mix."
                     ),
                 },
                 {"role": "user", "content": user_input.message},
@@ -75,30 +86,55 @@ def negotiate(user_input: UserInput):
         )
         return {"response": response.choices[0].message.content}
 
-    # Lowball immediately
-    if offer < ABSOLUTE_MIN:
-        return {"response": "Illa sir, idu too less. Serious offer maadi."}
-
-    # First serious offer → fight
-    if not has_countered:
-        counter = max(offer + 10, 130)
-        current_price = counter
-        has_countered = True
+    # --------- TOO LOW (HARD REJECT) ---------
+    if offer < 110:
         return {
-            "response": f"{counter} last price sir. Quality item idu."
+            "response": "Sir idu too low. Naanu loss alli sell maadakke agalla."
         }
 
-    # After counter → close deal if close enough
-    if offer >= current_price - 10:
-        deal_closed = True
+    # --------- FIRST SERIOUS OFFER (FIGHT STARTS) ---------
+    if counter_attempts == 0:
+        counter_attempts += 1
+        current_price = max(offer + 15, 135)
         return {
-            "response": f"Okay sir, {offer} final. Deal done 🤝"
+            "response": f"{current_price} sir. Idu already tight price."
         }
 
-    # User drops after counter
-    return {
-        "response": "Sir, already best rate idu. Please understand."
-    }
+    # --------- SECOND ROUND (HARD BARGAIN ZONE) ---------
+    if counter_attempts == 1:
+        counter_attempts += 1
+
+        if offer >= 120:
+            deal_closed = True
+            return {
+                "response": f"Okay sir… {offer} final. Regular customer antha 🤝"
+            }
+
+        if 110 <= offer < 120:
+            return {
+                "response": (
+                    "Sir swalpa adjust maadi. 125 kodbeku. "
+                    "Naanu already loss alli idini."
+                )
+            }
+
+    # --------- FINAL ROUND (CLOSE OR WALK AWAY) ---------
+    if counter_attempts >= 2:
+        if offer >= 120:
+            deal_closed = True
+            return {
+                "response": f"Okay sir, {offer}. Final deal 🤝"
+            }
+
+        if offer >= 115:
+            deal_closed = True
+            return {
+                "response": "Hmm… sari sir. 115 final. Last price 🤝"
+            }
+
+        return {
+            "response": "Illa sir. Ee price ge agalla."
+        }
 
 # ------------------ SIMPLE UI ------------------
 
@@ -119,7 +155,7 @@ def dom():
 <body>
     <h2>BargainBot – Shopkeeper Negotiation</h2>
     <div id="chat"></div>
-    <input id="msg" placeholder="Type your offer..." />
+    <input id="msg" placeholder="Type your message..." />
     <button onclick="send()">Send</button>
 
     <script>
