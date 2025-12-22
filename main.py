@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from openai import OpenAI
-import os, re
+import os, json
 
 # ------------------ SETUP ------------------
 
@@ -12,87 +12,97 @@ app = FastAPI()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ------------------ PRODUCT DATA ------------------
-
-PRODUCT = {
-    "name": "Bluetooth Speaker",
-    "base_price": 150,
-    "min_price": 110,
-    "cost": 90,
-    "margin": "medium",
-    "demand": "high",
-    "bulk_allowed": False
-}
-
-# ------------------ LOAD MEGA PROMPT ------------------
+# ------------------ LOAD PROMPT ------------------
 
 with open("mega_prompt.txt", "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
-# ------------------ SESSION MEMORY ------------------
+# ------------------ PRODUCT CATALOG (FACTS ONLY) ------------------
+
+PRODUCT_CATALOG = {
+    "wired_earphones": {
+        "name": "Wired Earphones",
+        "cost_price": 150,
+        "selling_range": [180, 220],
+        "margin_level": "low",
+        "demand": "medium",
+        "use_cases": ["calls", "basic music"],
+        "pairable": True
+    },
+    "bluetooth_earphones": {
+        "name": "Bluetooth Earphones",
+        "cost_price": 500,
+        "selling_range": [650, 800],
+        "margin_level": "medium",
+        "demand": "high",
+        "use_cases": ["daily use", "travel", "office"],
+        "pairable": False
+    },
+    "headphones": {
+        "name": "Headphones",
+        "cost_price": 1200,
+        "selling_range": [1600, 2200],
+        "margin_level": "high",
+        "demand": "medium",
+        "use_cases": ["long listening", "quality music"],
+        "pairable": False
+    },
+    "bluetooth_speaker": {
+        "name": "Bluetooth Speaker",
+        "cost_price": 900,
+        "selling_range": [1200, 1600],
+        "margin_level": "medium-high",
+        "demand": "high",
+        "use_cases": ["room", "party", "group"],
+        "pairable": True
+    }
+}
+
+# ------------------ MEMORY ------------------
 
 session_messages = []
 
-# ------------------ HELPERS ------------------
-
-def extract_offer(text):
-    match = re.search(r"\b\d+\b", text)
-    return int(match.group()) if match else None
-
-# ------------------ MODEL ------------------
+# ------------------ INPUT MODEL ------------------
 
 class UserInput(BaseModel):
     message: str
+    gender: str
+    age_group: str
 
-# ------------------ CHAT ROUTE ------------------
+# ------------------ CHAT ENDPOINT ------------------
 
 @app.post("/chat")
 def chat(user_input: UserInput):
-    try:
-        text = user_input.message.lower()
-        offer = extract_offer(text)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "system",
+            "content": f"""
+CUSTOMER PROFILE:
+Gender: {user_input.gender}
+Age Group: {user_input.age_group}
 
-        # 🔒 HARD PRICE GUARDRAIL
-        if offer is not None and offer < PRODUCT["min_price"]:
-            return {
-                "response": "Illa sir, idu too low. Loss alli sell maadakke agalla."
-            }
-
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "system",
-                "content": f"""
-PRODUCT DETAILS:
-Name: {PRODUCT['name']}
-Base Price: {PRODUCT['base_price']}
-Minimum Price: {PRODUCT['min_price']}
-Cost Price: {PRODUCT['cost']}
-Margin: {PRODUCT['margin']}
-Demand: {PRODUCT['demand']}
-Bulk Allowed: {PRODUCT['bulk_allowed']}
+PRODUCT CATALOG (BUSINESS FACTS):
+{json.dumps(PRODUCT_CATALOG, indent=2)}
 """
-            }
-        ]
+        }
+    ]
 
-        messages.extend(session_messages)
-        messages.append({"role": "user", "content": user_input.message})
+    messages.extend(session_messages)
+    messages.append({"role": "user", "content": user_input.message})
 
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=messages
-        )
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=messages
+    )
 
-        reply = response.choices[0].message.content
+    reply = response.choices[0].message.content
 
-        session_messages.append({"role": "user", "content": user_input.message})
-        session_messages.append({"role": "assistant", "content": reply})
+    session_messages.append({"role": "user", "content": user_input.message})
+    session_messages.append({"role": "assistant", "content": reply})
+    session_messages[:] = session_messages[-12:]
 
-        return {"response": reply}
-
-    except Exception as e:
-        print("🔥 ERROR:", e)
-        return {"response": "Internal error. Check server logs."}
+    return {"response": reply}
 
 # ------------------ SIMPLE UI ------------------
 
@@ -101,35 +111,53 @@ def dom():
     return """
 <!DOCTYPE html>
 <html>
-<head>
-<title>Bangalore Shopkeeper Bot</title>
-<style>
-body { font-family: sans-serif; max-width: 600px; margin: auto; }
-#chat { border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 10px; }
-.user { text-align: right; color: blue; }
-.bot { text-align: left; color: green; }
-</style>
-</head>
+<head><title>Expert Shopkeeper Demo</title></head>
 <body>
-<h2>Bangalore Shopkeeper Bot</h2>
-<div id="chat"></div>
-<input id="msg" placeholder="Type message..." />
+
+<h3>Bangalore Shopkeeper (Prompt-Driven)</h3>
+
+Gender:
+<select id="gender">
+  <option value="male">Male</option>
+  <option value="female">Female</option>
+</select>
+
+Age Group:
+<select id="age">
+  <option value="child">Child</option>
+  <option value="young">Young</option>
+  <option value="adult">Adult</option>
+  <option value="mid-aged">Mid-aged</option>
+  <option value="elderly">Elderly</option>
+</select>
+
+<br><br>
+
+<input id="msg" placeholder="Speak..." />
 <button onclick="send()">Send</button>
+
+<div id="chat"></div>
+
 <script>
 async function send() {
   const msg = document.getElementById("msg").value;
-  if (!msg) return;
-  chat.innerHTML += `<div class="user">You: ${msg}</div>`;
+  const gender = document.getElementById("gender").value;
+  const age = document.getElementById("age").value;
+
+  chat.innerHTML += `<p><b>You:</b> ${msg}</p>`;
   document.getElementById("msg").value = "";
+
   const res = await fetch("/chat", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({message: msg})
+    body: JSON.stringify({ message: msg, gender: gender, age_group: age })
   });
+
   const data = await res.json();
-  chat.innerHTML += `<div class="bot">Bot: ${data.response}</div>`;
+  chat.innerHTML += `<p><b>Shopkeeper:</b> ${data.response}</p>`;
 }
 </script>
+
 </body>
 </html>
 """
